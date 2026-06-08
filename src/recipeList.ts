@@ -246,6 +246,13 @@ export class RecipeList {
             }
         });
 
+        this.actionHandlers.set("toggle_whole_recipe_batches", (obj, event, parent) => {
+            if (obj instanceof PageModel && event.type === "change") {
+                obj.settings.wholeRecipeBatches = (event.target as HTMLInputElement).checked;
+                UpdateProject();
+            }
+        });
+
         this.actionHandlers.set("update_machine_choice", (obj, event, parent) => {
             if (obj instanceof RecipeModel && event.type === "change") {
                 const target = event.target as HTMLInputElement | HTMLSelectElement;
@@ -814,6 +821,15 @@ export class RecipeList {
                         <option value="sec" ${page.settings.timeUnit === "sec" ? 'selected' : ''}>Seconds</option>
                         <option value="tick" ${page.settings.timeUnit === "tick" ? 'selected' : ''}>Ticks</option>
                     </select>
+                </div>
+                <div class="setting-item">
+                    <label>
+                        <input type="checkbox"
+                            data-iid="${page.iid}"
+                            data-action="toggle_whole_recipe_batches"
+                            ${page.settings.wholeRecipeBatches ? 'checked' : ''}>
+                        Round recipes up to whole batches
+                    </label>
                 </div>
                 <div class="share-links">
                     Share:
