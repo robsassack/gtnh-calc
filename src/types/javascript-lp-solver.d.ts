@@ -9,6 +9,9 @@ declare global {
 export interface Model {
     optimize: string;
     opType: 'min' | 'max';
+    ints?: {
+        [key: string]: 1;
+    };
     constraints: {
         [key: string]: {
             min?: number;

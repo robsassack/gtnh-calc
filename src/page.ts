@@ -339,6 +339,7 @@ export class ProductModel extends ModelObject
 type Settings = {
     minVoltage: number;
     timeUnit: "hour" | "min" | "sec" | "tick";
+    wholeRecipeBatches: boolean;
 }
 
 export class PageModel extends ModelObject
@@ -349,7 +350,7 @@ export class PageModel extends ModelObject
     private history: string[] = [];
     private readonly MAX_HISTORY = 50;
     status: "not solved" | "solved" | "infeasible" | "unbounded" = "not solved";
-    settings: Settings = {minVoltage: 0, timeUnit: "min"};
+    settings: Settings = {minVoltage: 0, timeUnit: "min", wholeRecipeBatches: false};
     timeScale: number = 1;
 
     Visit(visitor: ModelObjectVisitor): void {
@@ -378,6 +379,8 @@ export class PageModel extends ModelObject
                     this.settings.minVoltage = source.settings.minVoltage;
                 if (typeof source.settings.timeUnit === "string")
                     this.settings.timeUnit = source.settings.timeUnit as "hour" | "min" | "sec" | "tick";
+                if (typeof source.settings.wholeRecipeBatches === "boolean")
+                    this.settings.wholeRecipeBatches = source.settings.wholeRecipeBatches;
             }
         }
     }

@@ -9,6 +9,11 @@ class LinkCollection {
     input: {[key:string]:{[key:string]:number}} = {};
     inputOreDict: {[key:string]:{[key:string]:number}} = {};
     inputOreDictRecipe: {[key:string]:RecipeModel[]} = {};
+    recipeOrder: {[key:string]:number} = {};
+
+    SetRecipeOrder(linkVar:string, order:number):void {
+        this.recipeOrder[linkVar] = order;
+    }
 
     AddInput(goods:RecipeObject, amount:number, linkVar:string):void {
         if (amount === 0) return;
@@ -42,6 +47,7 @@ class LinkCollection {
         for (const key in other.inputOreDictRecipe) {
             this.inputOreDictRecipe[key] = [...this.inputOreDictRecipe[key] || [], ...other.inputOreDictRecipe[key]];
         }
+        this.recipeOrder = {...this.recipeOrder, ...other.recipeOrder};
     }
 }
 
@@ -53,19 +59,75 @@ function MatchVariablesToConstraints(model:Model, name:string, variableList: {[k
     }
 }
 
-function CreateLinkByAlgorithm(model:Model, algorithm:LinkAlgorithm, group:RecipeGroupModel, goodsId:string, collectionKey:string,
-    collection:{[key:string]:{[key:string]:number}}, matchedOutputs:{[key:string]:boolean}, outputAmount:{[key:string]:number})
+function HasForwardOutput(input:{[key:string]:number}, output:{[key:string]:number}, recipeOrder:{[key:string]:number}):boolean
 {
-    var linkName = `link_${group.iid}_${goodsId}`;
-    MatchVariablesToConstraints(model, linkName, collection[collectionKey]);
-    let amount = collection[collectionKey]["_amount"] || -outputAmount["_amount"] || 0;
-    matchedOutputs[goodsId] = true;
-    delete collection[collectionKey];
-    group.actualLinks[goodsId] = algorithm;
-    model.constraints[linkName] = {equal:amount};
+    return Object.keys(GetForwardOutput(input, output, recipeOrder)).length > 0;
 }
 
-function PreProcessRecipe(recipeModel:RecipeModel, model:Model, collection:LinkCollection)
+function GetEarliestInputOrder(input:{[key:string]:number}, recipeOrder:{[key:string]:number}):number
+{
+    let earliestInput = Number.POSITIVE_INFINITY;
+    for (const key in input) {
+        if (key === "_amount")
+            continue;
+        earliestInput = Math.min(earliestInput, recipeOrder[key] ?? Number.POSITIVE_INFINITY);
+    }
+    return earliestInput;
+}
+
+function GetForwardOutput(input:{[key:string]:number}, output:{[key:string]:number}, recipeOrder:{[key:string]:number}):{[key:string]:number}
+{
+    let result:{[key:string]:number} = {};
+    const earliestInput = GetEarliestInputOrder(input, recipeOrder);
+    for (const key in output) {
+        if (key === "_amount")
+            continue;
+        if ((recipeOrder[key] ?? Number.NEGATIVE_INFINITY) >= earliestInput)
+            result[key] = output[key];
+    }
+    return result;
+}
+
+function CreateLinkByAlgorithm(model:Model, algorithm:LinkAlgorithm, group:RecipeGroupModel, goodsId:string, collectionKey:string,
+    collection:{[key:string]:{[key:string]:number}}, matchedOutputs:{[key:string]:{[key:string]:number}|null}, outputAmount:{[key:string]:number}, useMinimumLinks:boolean,
+    recipeOrder:{[key:string]:number})
+{
+    var linkName = `link_${group.iid}_${goodsId}`;
+    const inputAmount = collection[collectionKey];
+    let amount = inputAmount["_amount"] || -outputAmount["_amount"] || 0;
+    let outputForConstraint = outputAmount;
+    let shouldConstrainLink = false;
+    delete collection[collectionKey];
+    group.actualLinks[goodsId] = algorithm;
+    if (!useMinimumLinks) {
+        model.constraints[linkName] = {equal:amount};
+        shouldConstrainLink = true;
+    } else if (amount !== 0 || HasForwardOutput(inputAmount, outputAmount, recipeOrder)) {
+        if (amount === 0)
+            outputForConstraint = GetForwardOutput(inputAmount, outputAmount, recipeOrder);
+        model.constraints[linkName] = {max: amount};
+        shouldConstrainLink = true;
+    }
+    if (shouldConstrainLink) {
+        MatchVariablesToConstraints(model, linkName, inputAmount);
+        matchedOutputs[goodsId] = outputForConstraint;
+    } else {
+        matchedOutputs[goodsId] = null;
+    }
+}
+
+function HasNetOutputForOreDictCandidate(input:{[key:string]:number}, output:{[key:string]:number}):boolean
+{
+    let netOutput = 0;
+    for (const key in output) {
+        if (key === "_amount")
+            continue;
+        netOutput += output[key] + (input[key] || 0);
+    }
+    return netOutput < -0.000001;
+}
+
+function PreProcessRecipe(recipeModel:RecipeModel, model:Model, collection:LinkCollection, wholeRecipeBatches:boolean, timeScale:number, order:number)
 {
     let recipe = Repository.current.GetById<Recipe>(recipeModel.recipeId);
     if (!recipe)
@@ -73,6 +135,20 @@ function PreProcessRecipe(recipeModel:RecipeModel, model:Model, collection:LinkC
     recipeModel.recipe = recipe;
     let varName = `recipe_${recipeModel.iid}`;
     model.variables[varName] = {"obj":1};
+    collection.SetRecipeOrder(varName, order);
+
+    if (wholeRecipeBatches) {
+        const batchVarName = `recipe_batches_${recipeModel.iid}`;
+        const batchConstraintName = `whole_recipe_batches_${recipeModel.iid}`;
+        model.variables[batchVarName] = {
+            "obj": 0,
+            [batchConstraintName]: -timeScale,
+        };
+        model.variables[varName][batchConstraintName] = 1;
+        model.constraints[batchConstraintName] = {equal: 0};
+        model.ints ||= {};
+        model.ints[batchVarName] = 1;
+    }
 
     recipeModel.overclockFactor = 1;
 
@@ -176,21 +252,21 @@ function PreProcessRecipe(recipeModel:RecipeModel, model:Model, collection:LinkC
     }
 }
 
-function CreateAndMatchLinks(group:RecipeGroupModel, model:Model, collection:LinkCollection)
+function CreateAndMatchLinks(group:RecipeGroupModel, model:Model, collection:LinkCollection, wholeRecipeBatches:boolean, timeScale:number, order:{value:number})
 {
     for (const child of group.elements) {
         if (child instanceof RecipeModel) {
-            PreProcessRecipe(child, model, collection);
+            PreProcessRecipe(child, model, collection, wholeRecipeBatches, timeScale, order.value++);
         } else if (child instanceof RecipeGroupModel) {
             let childCollection:LinkCollection = new LinkCollection();
-            CreateAndMatchLinks(child, model, childCollection);
+            CreateAndMatchLinks(child, model, childCollection, wholeRecipeBatches, timeScale, order);
             collection.Merge(childCollection);
         }
     }
 
     console.log("Raw collection",collection);
 
-    let matchedOutputs: {[key:string]:boolean} = {};
+    let matchedOutputs: {[key:string]:{[key:string]:number}|null} = {};
     group.actualLinks = {...group.links};
 
     for (const key of Object.keys(collection.inputOreDict)) {
@@ -199,13 +275,15 @@ function CreateAndMatchLinks(group:RecipeGroupModel, model:Model, collection:Lin
             let algorithm = group.links[item.id] || LinkAlgorithm.Match;
             if (collection.output[item.id] === undefined)
                 continue;
+            if (!HasNetOutputForOreDictCandidate(collection.inputOreDict[key], collection.output[item.id]))
+                continue;
             // Despite the fact that we are ignoring the link, we still need to select the ore dict item to have the same item in production and consumption
             for (const recipe of collection.inputOreDictRecipe[key])
                 recipe.selectedOreDicts[key] = item;
             if (algorithm === LinkAlgorithm.Ignore)
                 continue;
 
-            CreateLinkByAlgorithm(model, algorithm, group, item.id, key, collection.inputOreDict, matchedOutputs, collection.output[item.id]);
+            CreateLinkByAlgorithm(model, algorithm, group, item.id, key, collection.inputOreDict, matchedOutputs, collection.output[item.id], wholeRecipeBatches, collection.recipeOrder);
             break
         }
     }
@@ -215,12 +293,13 @@ function CreateAndMatchLinks(group:RecipeGroupModel, model:Model, collection:Lin
         if (algorithm === LinkAlgorithm.Ignore || collection.output[key] === undefined)
             continue;
 
-        CreateLinkByAlgorithm(model, algorithm, group, key, key, collection.input, matchedOutputs, collection.output[key]);
+        CreateLinkByAlgorithm(model, algorithm, group, key, key, collection.input, matchedOutputs, collection.output[key], wholeRecipeBatches, collection.recipeOrder);
     }
 
     for (const key in matchedOutputs) {
         var linkName = `link_${group.iid}_${key}`;
-        MatchVariablesToConstraints(model, linkName, collection.output[key]);
+        if (matchedOutputs[key] !== null)
+            MatchVariablesToConstraints(model, linkName, matchedOutputs[key]);
         delete collection.output[key];
     }
 
@@ -306,7 +385,7 @@ export function SolvePage(page:PageModel):void
                 collection.output[product.goodsId] = {"_amount": product.amount};
             }
         }
-        CreateAndMatchLinks(page.rootGroup, model, collection);
+        CreateAndMatchLinks(page.rootGroup, model, collection, page.settings.wholeRecipeBatches, timeScale, {value: 0});
         console.log("Solve model",model);
 
         let solution = window.solver.Solve(model);

@@ -51,10 +51,10 @@ namespace Source
         private static bool GetSingleBlockVoltageTier(Item item, out int tier)
         {
             tier = 0;
-            if (!item.tooltip.Contains("Voltage IN"))
+            if (!(item.tooltip ?? "").Contains("Voltage IN"))
                 return false;
             
-            var cleanedTooltip = Regex.Replace(item.tooltip, "§.", "");
+            var cleanedTooltip = Regex.Replace(item.tooltip ?? "", "§.", "");
             
             foreach (var vtier in VoltageTiers.voltageTiers)
             {
@@ -79,10 +79,12 @@ namespace Source
                 Item fallbackCrafter = null;
                 foreach (var crafter in type.crafters)
                 {
+                    if (crafter == null)
+                        continue;
                     fallbackCrafter = crafter;
                     if (!item.Contains(crafter))
                     {
-                        if (!crafter.tooltip.Contains("DEPRECATED"))
+                        if (!(crafter.tooltip ?? "").Contains("DEPRECATED"))
                             item.Add(crafter);
                     }
                 }
@@ -103,13 +105,31 @@ namespace Source
                     type.singleblocks.AddRange(sb.Take(maxTier+1));
                 type.multiblocks.AddRange(mb);
                 type.defaultCrafter = type.singleblocks.Count > 0 ? type.singleblocks.First(x => x != null) : type.multiblocks.FirstOrDefault(fallbackCrafter);
+                if (type.singleblocks.Count > 0)
+                    Console.WriteLine("Detected " + type.singleblocks.Count(x => x != null) + " singleblock tiers for " + type.name);
             }
         }
 
         private static void ProcessAspects(Repository repository)
         {
             var aspects = repository.items.Where(x => x.mod == "thaumcraftneiplugin" && x.name.StartsWith("Aspect: ")).ToDictionary(x => x.name.Substring("Aspect: ".Length));
-            var crafter = repository.items.First(x => x.name == "Alchemical Furnace");
+            if (aspects.Count == 0 || repository.items.All(x => x.aspects.Count == 0))
+            {
+                Console.WriteLine("No Thaumcraft aspects found, skipping aspect recipes.");
+                return;
+            }
+            var crafter = repository.items.FirstOrDefault(x => x.name == "Alchemical Furnace");
+            if (crafter == null)
+            {
+                Console.WriteLine("Alchemical Furnace not found, skipping aspect recipes.");
+                return;
+            }
+            var missingAspect = repository.items.SelectMany(x => x.aspects).Where(x => !aspects.ContainsKey(x.name)).Select(x => x.name).FirstOrDefault();
+            if (missingAspect != null)
+            {
+                Console.WriteLine("Aspect item not found for " + missingAspect + ", skipping aspect recipes.");
+                return;
+            }
             var recipeType = new RecipeType
             {
                 shapeless = true, itemInputs = new RecipeDimensions(1, 1), itemOutputs = new RecipeDimensions(5, 2), category = "thaumcraft", name = "Item aspects",

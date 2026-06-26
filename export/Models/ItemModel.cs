@@ -50,6 +50,18 @@ namespace GT_recipe_parser
         public string BaseItemGroupId { get; set; }
     }
 
+    public class ItemTooltipModel
+    {
+        [SchemaName("ITEM_ID")]
+        public string ItemId { get; set; }
+
+        [SchemaName("TOOLTIP")]
+        public string Tooltip { get; set; }
+
+        [SchemaName("TOOLTIP_ORDER")]
+        public int TooltipOrder { get; set; }
+    }
+
     public class ItemGroupItemStacksModel
     {
         [SchemaName("ITEM_GROUP_ID")]

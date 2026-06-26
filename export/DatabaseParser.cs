@@ -14,6 +14,15 @@ namespace Source
             return Array.Empty<T>();
         }
 
+        public T[] ConsumeTableContents<T>(TypeSchema<T> schema)
+        {
+            var tableName = schema.tableName;
+            Console.WriteLine("Processing " + tableName);
+            if (!tables.Remove(tableName, out var table))
+                return Array.Empty<T>();
+            return schema.ToTypedArray(table.elements);
+        }
+
         private readonly Dictionary<string, Table> tables = new Dictionary<string, Table>();
 
         public void Parse(string databaseFile)
