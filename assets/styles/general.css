@@ -161,7 +161,28 @@ item-icon::after {
     bottom: -6px;
     right: 1px;
     font-size: 8px;
-    text-shadow: 1px 1px #342C34;
+    text-shadow:
+        -1px -1px #342C34,
+        0   -1px #342C34,
+        1px -1px #342C34,
+        -1px  0   #342C34,
+        1px  0   #342C34,
+        -1px  1px #342C34,
+        0    1px #342C34,
+        1px  1px #342C34,
+
+        -2px  0   #342C34,
+        2px  0   #342C34,
+        0   -2px #342C34,
+        0    2px #342C34,
+        -2px -1px #342C34,
+        -2px  1px #342C34,
+        2px -1px #342C34,
+        2px  1px #342C34,
+        -1px -2px #342C34,
+        1px -2px #342C34,
+        -1px  2px #342C34,
+        1px  2px #342C34;
     color: white;
     pointer-events: none;
     white-space: nowrap;
