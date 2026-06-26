@@ -52,6 +52,7 @@ namespace Source.Data
         public int stackSize;
         public int damage;
         [NonSerialized] public bool touched;
+        [NonSerialized] public string sourceIconPath;
         public List<ItemAspect> aspects = new List<ItemAspect>();
         public void GenerateId()
         {

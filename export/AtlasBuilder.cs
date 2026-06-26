@@ -50,15 +50,16 @@ namespace Source
         {
             Console.WriteLine($"Starting atlas creation with {iconsPaths.Count} icons...");
             
-            // Calculate required dimensions first
+            // Build the final 32px atlas directly. Keeping both a 64px atlas and
+            // a resized clone at the same time can add several GB of peak memory.
             var iconsCount = iconsPaths.Count;
             var requiredHeight = (iconsCount - 1) / (1 << IconAtlas.DimensionBits) + 1;
-            var width = (1 << IconAtlas.DimensionBits) * IconAtlas.ImageSize;
-            var height = requiredHeight * IconAtlas.ImageSize;
+            var outputImageSize = IconAtlas.ImageSize / 2;
+            var width = (1 << IconAtlas.DimensionBits) * outputImageSize;
+            var height = requiredHeight * outputImageSize;
 
             Console.WriteLine($"Creating atlas with dimensions {width}x{height}...");
 
-            // Create the atlas
             using var atlas = new Image<Rgba32>(width, height);
             
             // Draw all images onto the atlas
@@ -77,18 +78,16 @@ namespace Source
                 
                 using (image)
                 {
-                    var positionX = (i & IconAtlas.XMask) * IconAtlas.ImageSize;
-                    var positionY = ((i & IconAtlas.YMask) >> IconAtlas.DimensionBits) * IconAtlas.ImageSize;
+                    if (image.Width != outputImageSize || image.Height != outputImageSize)
+                        image.Mutate(x => x.Resize(outputImageSize, outputImageSize, KnownResamplers.Box));
+
+                    var positionX = (i & IconAtlas.XMask) * outputImageSize;
+                    var positionY = ((i & IconAtlas.YMask) >> IconAtlas.DimensionBits) * outputImageSize;
                     
                     atlas.Mutate(x => x.DrawImage(image, new Point(positionX, positionY), 1f));
                 }
             }
 
-            Console.WriteLine("Resizing...");
-
-            // Resize to 50% and save as WebP
-            using var resized = atlas.Clone(x => x.Resize(width / 2, height / 2, KnownResamplers.Box));
-            
             Console.WriteLine("Saving as WEBP (This might take a while)...");
             var encoder = new WebpEncoder
             {
@@ -99,7 +98,7 @@ namespace Source
             };
             
             using var fileStream = File.Create(savePath);
-            resized.Save(fileStream, encoder);
+            atlas.Save(fileStream, encoder);
 
             Console.WriteLine($"Atlas creation complete. Saved to: {savePath}");
             return savePath;

@@ -245,7 +245,7 @@ namespace Source
             WriteObjectRef(container.empty);
         }
 
-        public byte[] Compile()
+        public void WriteTo(string path)
         {
             while (objectsToWrite.TryPop(out var o))
                 WriteObjectVerbatim(o);
@@ -277,15 +277,13 @@ namespace Source
                 }
             }
 
-            var resultData = rawData.ToArray();
-            var resultDataAsBytes = MemoryMarshal.AsBytes(resultData.AsSpan());
-            var finalMemory = new MemoryStream();
+            var resultDataAsBytes = MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(rawData));
+            using var finalMemory = File.Create(path);
             {
                 using var zip = new GZipStream(finalMemory, CompressionLevel.Optimal);
                 zip.Write(resultDataAsBytes);
                 zip.Flush();
             }
-            return finalMemory.ToArray();
         }
     }
 }

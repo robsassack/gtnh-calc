@@ -12,7 +12,16 @@ Data building is done using the NESQL Exporter mod and a C# processing tool. See
 
 To run this project locally:
 
-1. Clone the repository
+1. Clone the repository with its data submodule:
+```bash
+git clone --recursive https://github.com/ShadowTheAge/gtnh.git
+```
+
+If you already cloned it, initialize the submodule from the repository directory:
+```bash
+git submodule update --init --recursive
+```
+
 2. Install dependencies:
 ```bash
 npm install

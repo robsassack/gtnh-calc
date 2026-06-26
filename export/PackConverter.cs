@@ -1,6 +1,7 @@
 ﻿using export;
 using GT_recipe_parser;
 using Source.Data;
+using System.Text;
 
 namespace Source
 {
@@ -19,6 +20,7 @@ namespace Source
         public static readonly TypeSchema<ItemModel> item = new ("ITEM");
         public static readonly TypeSchema<ItemGroupModel> itemGroup = new ("ITEM_GROUP");
         public static readonly TypeSchema<ItemGroupItemStacksModel> itemGroupItemStacks = new ("ITEM_GROUP_ITEM_STACKS");
+        public static readonly TypeSchema<ItemTooltipModel> itemTooltip = new ("ITEM_TOOLTIP");
         public static readonly TypeSchema<ItemToolClassesModel> itemToolClasses = new ("ITEM_TOOL_CLASSES");
         public static readonly TypeSchema<MobModel> mob = new ("MOB");
         public static readonly TypeSchema<MobInfoModel> mobInfo = new ("MOB_INFO");
@@ -50,10 +52,9 @@ namespace Source
 
         public static readonly TypeSchema[] All = 
         {
-            aspect, aspectAspect, aspectEntry, fluid, fluidBlock, fluidContainer, fluidGroupFluidStacks, fluidGroup, gregTechRecipe, gregTechRecipeItem, item, itemGroup,
-            itemGroupItemStacks, itemToolClasses, mob, mobInfo, mobInfoDrops, mobInfoSpawnInfo, oreDictionary, quest, questLine, questLineQuest, questLineQuestLineEntries,
-            questQuest, questReward, questTask, recipe, recipeFluidGroup, recipeFluidInputsFluids, recipeFluidOutputs, recipeItemGroup, recipeItemInputsItems,
-            recipeItemOutputs, recipeType, reward, rewardItemGroup, task, taskFluids, taskItemGroup, recipeTypeItem, recipeMetadata
+            aspect, aspectEntry, fluid, fluidContainer, fluidGroupFluidStacks, fluidGroup, gregTechRecipe, gregTechRecipeItem, item, itemGroup,
+            itemGroupItemStacks, itemTooltip, oreDictionary, recipe, recipeFluidGroup, recipeFluidOutputs, recipeItemGroup, recipeItemOutputs, recipeType,
+            recipeTypeItem, recipeMetadata
         };
 
         public static TypeSchema FindSchema(string name)
@@ -196,7 +197,7 @@ namespace Source
             var recipeTypes = new List<RecipeType>();
             var aspects = new Dictionary<string, string>();
 
-            foreach (var fluid in generator.GetTableContents(fluid))
+            foreach (var fluid in generator.ConsumeTableContents(fluid))
             {
                 fluids[fluid.Id] = new Fluid()
                 {
@@ -206,7 +207,7 @@ namespace Source
                 icons.Add(fluid.ImageFilePath);
             }
 
-            foreach (var item in generator.GetTableContents(item))
+            foreach (var item in generator.ConsumeTableContents(item))
             {
                 if (ItemBanlist.IsItemBanned(item.ModId, item.InternalName, item.LocalizedName, item.Nbt))
                     items[item.Id] = null;
@@ -215,25 +216,49 @@ namespace Source
                     items[item.Id] = new Item
                     {
                         name = item.LocalizedName, id = item.Id, tooltip = item.Tooltip, stackSize = item.MaxStackSize, mod = item.ModId,
-                        internalName = item.InternalName, damage = item.ItemDamage, numericId = item.ItemId, unlocalizedName = item.UnlocalizedName, nbt = item.Nbt
+                        internalName = item.InternalName, damage = item.ItemDamage, numericId = item.ItemId, unlocalizedName = item.UnlocalizedName, nbt = item.Nbt,
+                        sourceIconPath = item.ImageFilePath
                     };
                 }
             }
 
-            foreach (var container in generator.GetTableContents(fluidContainer))
+            var tooltips = new Dictionary<string, List<(int order, string text)>>();
+            foreach (var tooltip in generator.ConsumeTableContents(itemTooltip))
+            {
+                if (!items.TryGetValue(tooltip.ItemId, out var itemData) || itemData == null)
+                    continue;
+                if (!tooltips.TryGetValue(tooltip.ItemId, out var lines))
+                    tooltips[tooltip.ItemId] = lines = new List<(int order, string text)>();
+                lines.Add((tooltip.TooltipOrder, tooltip.Tooltip));
+            }
+
+            var tooltipBuilder = new StringBuilder();
+            foreach (var (itemId, lines) in tooltips)
+            {
+                var itemData = items[itemId];
+                tooltipBuilder.Clear();
+                if (!string.IsNullOrEmpty(itemData.tooltip))
+                    tooltipBuilder.Append(itemData.tooltip).Append('\n');
+                foreach (var (_, text) in lines.OrderBy(x => x.order))
+                    tooltipBuilder.Append(text).Append('\n');
+                itemData.tooltip = tooltipBuilder.ToString();
+            }
+
+            foreach (var container in generator.ConsumeTableContents(fluidContainer))
                 if (items.TryGetValue(container.ContainerId, out var item) && item != null)
                     item.container = new FluidContainer() { fluid = fluids[container.FluidStackFluidId], amount = container.FluidStackAmount, empty = items[container.EmptyContainerId] };
 
-            foreach (var itemGroup in generator.GetTableContents(itemGroup))
+            var rawItemGroups = generator.ConsumeTableContents(itemGroup);
+            foreach (var itemGroup in rawItemGroups)
                 igroups[itemGroup.Id] = new ItemGroupBuilder() {iid = itemGroup.Id};
 
-            foreach (var itemGroup in generator.GetTableContents(itemGroup))
+            foreach (var itemGroup in rawItemGroups)
                 igroups[itemGroup.Id].baseItemGroup = igroups[itemGroup.BaseItemGroupId];
 
-            foreach (var fluidGroup in generator.GetTableContents(fluidGroup))
+            foreach (var fluidGroup in generator.ConsumeTableContents(fluidGroup))
                 fgroups[fluidGroup.Id] = new FluidGroupBuilder();
 
-            var rawRecipeTypes = generator.GetTableContents(recipeType);
+            var rawRecipeTypes = generator.ConsumeTableContents(recipeType);
             foreach (var recipeGroup in rawRecipeTypes.GroupBy(x =>
                      {
                          var name = x.Type;
@@ -263,27 +288,29 @@ namespace Source
                 recipeTypes.Add(type);
             }
 
-            foreach (var typeItem in generator.GetTableContents(recipeTypeItem))
+            foreach (var typeItem in generator.ConsumeTableContents(recipeTypeItem))
             {
                 var recipe = recipeTypesMap[typeItem.RecipeTypeId];
                 var item = items[typeItem.IconId];
+                if (item == null)
+                    continue;
                 if (!recipe.crafters.Contains(item))
                     recipe.crafters.Add(item);
             }
             
-            foreach (var itemStack in generator.GetTableContents(itemGroupItemStacks))
+            foreach (var itemStack in generator.ConsumeTableContents(itemGroupItemStacks))
                 igroups[itemStack.ItemGroupId].variants.Add(new RecipeInput<Item> {goods = items[itemStack.ItemStacksItemId], amount = itemStack.ItemStacksStackSize});
 
-            foreach (var oreDict in generator.GetTableContents(oreDictionary))
+            foreach (var oreDict in generator.ConsumeTableContents(oreDictionary))
                 igroups[oreDict.ItemGroupId].oredict = oreDict.Name;
 
             foreach (var (_, value) in igroups)
                 value.variants.RemoveAll(x => x.goods == null);
 
-            foreach (var recipe in generator.GetTableContents(recipe))
+            foreach (var recipe in generator.ConsumeTableContents(recipe))
                 recipes[recipe.Id] = new RecipeBuilder() { recipe = new Recipe {recipeType = recipeTypesMap[recipe.RecipeTypeId], id = recipe.Id} };
 
-            foreach (var gt in generator.GetTableContents(gregTechRecipe))
+            foreach (var gt in generator.ConsumeTableContents(gregTechRecipe))
             {
                 var gtRecipe = new GtRecipeInfo
                 {
@@ -295,25 +322,25 @@ namespace Source
                 gtRecipes[gt.Id] = recipe;
             }
 
-            foreach (var metadata in generator.GetTableContents(recipeMetadata))
+            foreach (var metadata in generator.ConsumeTableContents(recipeMetadata))
             {
                 gtRecipes[metadata.GtRecipeId].metadata.Add(new RecipeMetadata {key = metadata.Key, value = metadata.Value});
             }
 
-            foreach (var fluidGroup in generator.GetTableContents(recipeFluidGroup))
+            foreach (var fluidGroup in generator.ConsumeTableContents(recipeFluidGroup))
                 recipes[fluidGroup.RecipeId].fluidInputs.Add((fluidGroup.FluidInputsKey, fgroups[fluidGroup.FluidInputsId]));
             
-            foreach (var itemGroup in generator.GetTableContents(recipeItemGroup))
+            foreach (var itemGroup in generator.ConsumeTableContents(recipeItemGroup))
                 recipes[itemGroup.RecipeId].itemInputs.Add((itemGroup.ItemInputsKey, igroups[itemGroup.ItemInputsId]));
 
-            foreach (var fluidGroup in generator.GetTableContents(recipeFluidOutputs))
+            foreach (var fluidGroup in generator.ConsumeTableContents(recipeFluidOutputs))
                 recipes[fluidGroup.RecipeId].fluidOutputs.Add(new RecipeProduct<Fluid>
                 {
                     slot = fluidGroup.FluidOutputsKey, amount = fluidGroup.FluidOutputsValueAmount, probability = (float)fluidGroup.FluidOutputsValueProbability,
                     goods = fluids[fluidGroup.FluidOutputsValueFluidId]
                 });
 
-            foreach (var itemGroup in generator.GetTableContents(recipeItemOutputs))
+            foreach (var itemGroup in generator.ConsumeTableContents(recipeItemOutputs))
             {
                 recipes[itemGroup.RecipeId].itemOutputs.Add(new RecipeProduct<Item>
                 {
@@ -322,7 +349,7 @@ namespace Source
                 });
             }
 
-            foreach (var fluidStack in generator.GetTableContents(fluidGroupFluidStacks))
+            foreach (var fluidStack in generator.ConsumeTableContents(fluidGroupFluidStacks))
                 fgroups[fluidStack.FluidGroupId].fluid = new RecipeInput<Fluid>{goods = fluids[fluidStack.FluidStacksFluidId], amount = fluidStack.FluidStacksAmount};
             
             foreach (var (_, recipe) in recipes)
@@ -346,27 +373,44 @@ namespace Source
                     v.touched = true;
             }
 
-            foreach (var item in generator.GetTableContents(item))
-            {
-                var itemData = items[item.Id];
-                if (itemData != null && itemData.touched)
-                {
-                    itemData.iconId = icons.Count;
-                    icons.Add(item.ImageFilePath);
-                }
-            }
-
-            foreach (var aspectModel in generator.GetTableContents(aspect))
+            foreach (var aspectModel in generator.ConsumeTableContents(aspect))
             {
                 aspects[aspectModel.Id] = aspectModel.Name;
             }
 
-            foreach (var aspectEntryModel in generator.GetTableContents(aspectEntry))
+            var usedAspectNames = new HashSet<string>();
+            foreach (var aspectEntryModel in generator.ConsumeTableContents(aspectEntry))
             {
                 var item = items[aspectEntryModel.ItemId];
                 if (item == null)
                     continue;
-                item.aspects.Add(new ItemAspect {name = aspects[aspectEntryModel.AspectId], amount = aspectEntryModel.Amount});
+                var aspectName = aspects[aspectEntryModel.AspectId];
+                item.aspects.Add(new ItemAspect {name = aspectName, amount = aspectEntryModel.Amount});
+                if (item.touched)
+                    usedAspectNames.Add(aspectName);
+            }
+
+            if (usedAspectNames.Count > 0)
+            {
+                foreach (var itemData in items.Values)
+                {
+                    if (itemData == null)
+                        continue;
+                    if (itemData.mod == "Thaumcraft" && itemData.name == "Alchemical Furnace")
+                        itemData.touched = true;
+                    if (itemData.mod == "thaumcraftneiplugin" && itemData.name.StartsWith("Aspect: ") &&
+                        usedAspectNames.Contains(itemData.name.Substring("Aspect: ".Length)))
+                        itemData.touched = true;
+                }
+            }
+
+            foreach (var itemData in items.Values)
+            {
+                if (itemData != null && itemData.touched)
+                {
+                    itemData.iconId = icons.Count;
+                    icons.Add(itemData.sourceIconPath);
+                }
             }
 
             //repository.items = items.Values.Where(x => x != null && x.touched).ToArray();

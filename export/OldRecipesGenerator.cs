@@ -1,5 +1,6 @@
 ﻿using System.IO.Compression;
-using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.IO.MemoryMappedFiles;
 using System.Security.Cryptography;
 using System.Text;
 using Source.Data;
@@ -8,21 +9,77 @@ namespace export;
 
 public class OldRecipesGenerator
 {
-    private static Span<int> ReadSlice(Span<int> data, int pointer)
+    private sealed class OldDataReader : IDisposable
     {
-        var target = data[pointer];
-        var length = data[target];
-        return data.Slice(target + 1, length);
+        private readonly string tempPath;
+        private readonly MemoryMappedFile memoryMappedFile;
+        private readonly MemoryMappedViewAccessor accessor;
+        private readonly long length;
+
+        public OldDataReader(string dataBinPath)
+        {
+            var tempDir = Path.GetDirectoryName(Path.GetFullPath(dataBinPath)) ?? Directory.GetCurrentDirectory();
+            tempPath = Path.Combine(tempDir, Path.GetRandomFileName() + ".unpacked");
+            using (var source = File.OpenRead(dataBinPath))
+            using (var zip = new GZipStream(source, CompressionMode.Decompress))
+            using (var temp = File.Create(tempPath))
+            {
+                zip.CopyTo(temp);
+            }
+
+            memoryMappedFile = MemoryMappedFile.CreateFromFile(tempPath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+            accessor = memoryMappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+            length = accessor.Capacity;
+        }
+
+        public int ReadInt(int index)
+        {
+            var offset = (long)index * sizeof(int);
+            if (offset < 0 || offset > length - sizeof(int))
+                throw new InvalidDataException("Invalid int pointer " + index);
+            return accessor.ReadInt32(index * sizeof(int));
+        }
+
+        public (int Start, int Length) ReadSlice(int pointer)
+        {
+            var target = ReadInt(pointer);
+            return (target + 1, ReadInt(target));
+        }
+
+        public string ReadString(int pointer)
+        {
+            var target = ReadInt(pointer);
+            var length = ReadInt(target);
+            if (length < 0 || length > 1024 * 1024)
+                throw new InvalidDataException("Invalid string length " + length + " at pointer " + pointer);
+            var offset = (long)(target + 1) * sizeof(int);
+            if (offset < 0 || offset + length > this.length)
+                throw new InvalidDataException("Invalid string range at pointer " + pointer);
+            var bytes = new byte[length];
+            accessor.ReadArray(offset, bytes, 0, length);
+            return Encoding.UTF8.GetString(bytes);
+        }
+
+        public void Dispose()
+        {
+            accessor.Dispose();
+            memoryMappedFile.Dispose();
+            File.Delete(tempPath);
+        }
     }
 
-    private static string ReadString(Span<byte> data, Span<int> intData, int pointer)
+    private static bool ShouldReportProgress(int processed, int total, Stopwatch timer, ref int lastPercent, ref long lastMilliseconds)
     {
-        var target = intData[pointer];
-        var length = intData[target];
-        var slice = data.Slice((target + 1) * 4, length);
-        return Encoding.UTF8.GetString(slice);
+        if (total <= 0)
+            return false;
+        var percent = processed * 100 / total;
+        if (percent == lastPercent || timer.ElapsedMilliseconds - lastMilliseconds < 1000)
+            return false;
+        lastPercent = percent;
+        lastMilliseconds = timer.ElapsedMilliseconds;
+        return true;
     }
-    
+
     private static void AppendHash<T>(IncrementalHash hash1, IncrementalHash hash2, RecipeInput<T>[] inputs) where T:GoodsOrDict
     {
         foreach (var input in inputs)
@@ -51,14 +108,9 @@ public class OldRecipesGenerator
     public static void PopulateOldRecipes(Repository repository, string oldDataBin)
     {
         Console.WriteLine("Calculating recipe remaps...");
-        using var fs = File.OpenRead(oldDataBin);
-        using var unpacked = new MemoryStream();
-        using var zip = new GZipStream(fs, CompressionMode.Decompress);
-        zip.CopyTo(unpacked);
-        var dataBin = new Span<byte>(unpacked.GetBuffer(), 0, (int)unpacked.Length);
-        var intBuffer = MemoryMarshal.Cast<byte, int>(dataBin);
-        var allRecipes = ReadSlice(intBuffer, 5);
-        var dataVersion = intBuffer[0];
+        using var oldData = new OldDataReader(oldDataBin);
+        var allRecipes = oldData.ReadSlice(5);
+        var dataVersion = oldData.ReadInt(0);
 
         var recipesById = new Dictionary<string, Recipe>();
         var recipesByHash = new Dictionary<string, Recipe>();
@@ -84,27 +136,34 @@ public class OldRecipesGenerator
         var missingRecipes = 0;
         var newRemaps = 0;
         var remappedRecipes = new Dictionary<string, Recipe>();
-        foreach (var recipe in allRecipes)
+        var timer = Stopwatch.StartNew();
+        var lastPercent = -1;
+        var lastMilliseconds = -1000L;
+        for (var recipeIndex = 0; recipeIndex < allRecipes.Length; recipeIndex++)
         {
-            var id = ReadString(dataBin, intBuffer, recipe + 4);
+            var recipe = oldData.ReadInt(allRecipes.Start + recipeIndex);
+            if (ShouldReportProgress(recipeIndex + 1, allRecipes.Length, timer, ref lastPercent, ref lastMilliseconds))
+                Console.WriteLine("Calculating recipe remaps: " + lastPercent + "% (" + (recipeIndex + 1) + "/" + allRecipes.Length + " old recipes checked)");
+
+            var id = oldData.ReadString(recipe + 4);
             if (recipesById.ContainsKey(id))
                 continue;
 
-            var recipeTypePtr = intBuffer[recipe + 6];
-            var recipeIoList = ReadSlice(intBuffer, recipe + 5);
+            var recipeTypePtr = oldData.ReadInt(recipe + 6);
+            var recipeIoList = oldData.ReadSlice(recipe + 5);
 
             using var hash1 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
             using var hash2 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
-            var recipeTypeName = Encoding.UTF8.GetBytes(ReadString(dataBin, intBuffer, recipeTypePtr));
+            var recipeTypeName = Encoding.UTF8.GetBytes(oldData.ReadString(recipeTypePtr));
             hash1.AppendData(recipeTypeName);
             hash2.AppendData(recipeTypeName);
             for (var i = 0; i < recipeIoList.Length; i+=5)
             {
-                var type = recipeIoList[i];
-                var goods = recipeIoList[i + 1];
-                var amount = recipeIoList[i + 3];
+                var type = oldData.ReadInt(recipeIoList.Start + i);
+                var goods = oldData.ReadInt(recipeIoList.Start + i + 1);
+                var amount = oldData.ReadInt(recipeIoList.Start + i + 3);
 
-                var goodsId = Encoding.UTF8.GetBytes(ReadString(dataBin, intBuffer, goods + 4));
+                var goodsId = Encoding.UTF8.GetBytes(oldData.ReadString(goods + 4));
                 if (amount > 0 || type >= 3)
                 {
                     hash1.AppendData(goodsId);
@@ -127,13 +186,31 @@ public class OldRecipesGenerator
         }
 
         var oldRemaps = 0;
+        var skippedOldRemaps = 0;
         if (dataVersion >= 4)
         {
-            var oldRemap = ReadSlice(intBuffer, 7);
-            foreach (var remap in oldRemap)
+            var oldRemap = oldData.ReadSlice(7);
+            lastPercent = -1;
+            lastMilliseconds = -1000L;
+            for (var remapIndex = 0; remapIndex < oldRemap.Length; remapIndex++)
             {
-                var idFrom = ReadString(dataBin, intBuffer, intBuffer[remap]);
-                var idTo = ReadString(dataBin, intBuffer, intBuffer[remap+1] + 4);
+                var remap = oldData.ReadInt(oldRemap.Start + remapIndex);
+                if (ShouldReportProgress(remapIndex + 1, oldRemap.Length, timer, ref lastPercent, ref lastMilliseconds))
+                    Console.WriteLine("Applying old recipe remaps: " + lastPercent + "% (" + (remapIndex + 1) + "/" + oldRemap.Length + " old remaps checked)");
+
+                string idFrom;
+                string idTo;
+                try
+                {
+                    idFrom = oldData.ReadString(oldData.ReadInt(remap));
+                    idTo = oldData.ReadString(oldData.ReadInt(remap+1) + 4);
+                }
+                catch (InvalidDataException ex)
+                {
+                    skippedOldRemaps++;
+                    Console.WriteLine("Skipping invalid old remap " + remapIndex + ": " + ex.Message);
+                    continue;
+                }
 
                 var recipeTo = recipesById.GetValueOrDefault(idTo) ?? remappedRecipes.GetValueOrDefault(idTo);
                 if (recipeTo == null)
@@ -144,6 +221,6 @@ public class OldRecipesGenerator
             }
         }
         
-        Console.WriteLine("Missing recipes: "+missingRecipes+", Remapped recipes: "+newRemaps+", Old remaps: "+oldRemaps);
+        Console.WriteLine("Missing recipes: "+missingRecipes+", Remapped recipes: "+newRemaps+", Old remaps: "+oldRemaps+", Skipped old remaps: "+skippedOldRemaps);
     }
 }
